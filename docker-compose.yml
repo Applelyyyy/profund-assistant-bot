@@ -1,0 +1,120 @@
+name: ta-queue
+
+x-runtime: &runtime
+  DOCKER_DEPLOYMENT: "true"
+  POSTGRES_USER: ${POSTGRES_USER:-ta}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in root .env}
+  POSTGRES_DB: ${POSTGRES_DB:-ta_queue}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in root .env}
+  DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?Set DISCORD_BOT_TOKEN in root .env}
+  DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:?Set DISCORD_CLIENT_ID in root .env}
+  DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:?Set DISCORD_GUILD_ID in root .env}
+  DISCORD_MESSAGE_CONTENT_ENABLED: ${DISCORD_MESSAGE_CONTENT_ENABLED:-false}
+  AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in root .env}
+  APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:3000}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  PERFORMANCE_METRICS_ENABLED: ${PERFORMANCE_METRICS_ENABLED:-false}
+  TZ: ${TZ:-Asia/Bangkok}
+
+x-app: &app
+  image: ta-queue-platform:local
+  pull_policy: never
+  environment: *runtime
+  init: true
+  volumes: ["platform-logs:/app/logs", "platform-backups:/app/backups"]
+  restart: "on-failure:5"
+  stop_grace_period: 45s
+
+services:
+  postgres:
+    image: postgres:18.3-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in root .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ta_queue}
+    volumes: ["postgres-data:/var/lib/postgresql"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:8.0.5-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in root .env}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in root .env}
+    command:
+      [
+        "sh",
+        "-c",
+        'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"',
+      ]
+    volumes: ["redis-data:/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  migrate:
+    <<: *app
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    restart: "no"
+    environment:
+      <<: *runtime
+      ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+    command: ["node", "--import", "tsx", "scripts/docker-init.ts"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  web:
+    <<: *app
+    command: ["node", "--import", "tsx", "scripts/web.ts", "start"]
+    ports: ["${WEB_HOST:-127.0.0.1}:${WEB_PORT:-3000}:3000"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+  bot:
+    <<: *app
+    command: ["node", "--import", "tsx", "apps/bot/src/index.ts"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    healthcheck:
+      test:
+        ["CMD", "node", "--import", "tsx", "scripts/docker-health.ts", "bot"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+  worker:
+    <<: *app
+    command: ["node", "--import", "tsx", "apps/worker/src/index.ts"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    healthcheck:
+      test:
+        ["CMD", "node", "--import", "tsx", "scripts/docker-health.ts", "worker"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  redis-data:
+  platform-logs:
+  platform-backups:

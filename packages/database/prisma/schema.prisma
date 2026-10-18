@@ -1,0 +1,469 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+enum SessionStatus {
+  ACCEPTING
+  DRAINING
+  COMPLETED
+}
+enum TicketStatus {
+  QUEUED
+  CLAIMED
+  MOVING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  MOVE_FAILED
+  NEEDS_REVIEW
+  NO_SHOW
+}
+model Guild {
+  id String @id
+  name String
+  nextSequence Int @default(0)
+  settings Json @default("{}")
+  createdAt DateTime @default(now())
+  students Student[]
+  coursework Coursework[]
+  sessions TASession[]
+  tickets QueueTicket[]
+  channels ChannelBinding[]
+  events SystemEvent[]
+  panels PublishedPanel[]
+  templates EmbedTemplate[]
+  support SupportTicket[]
+  operations ServiceOperation[]
+  managedPermissions ManagedPermission[]
+  taPresence TAPresence[]
+  notificationDeliveries NotificationDelivery[]
+  analyticsSince DateTime?
+  rankingsSince DateTime?
+  roomPanels TARoomPanel[]
+  maintenance MaintenancePlan[]
+  waitingPresence WaitingPresence[]
+  waitingAlerts WaitingRoomAlert[]
+}
+model AdminUser {
+  id String @id @default(cuid())
+  username String @unique
+  passwordHash String
+  role String @default("ADMIN")
+  disabled Boolean @default(false)
+  createdAt DateTime @default(now())
+  sessions AdminSession[]
+}
+model AdminSession {
+  id String @id
+  adminId String
+  admin AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  csrf String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([expiresAt])
+}
+model LoginAttempt {
+  key String @id
+  count Int @default(0)
+  windowAt DateTime @default(now())
+}
+model Student {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  studentId String
+  name String
+  lastname String
+  discordId String?
+  registration String @default("UNREGISTERED")
+  syncError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tickets QueueTicket[]
+  @@unique([guildId, studentId])
+  @@unique([guildId, discordId])
+}
+model StudentImport {
+  id String @id @default(cuid())
+  guildId String
+  actorId String
+  rows Json
+  errors Json
+  committedAt DateTime?
+  createdAt DateTime @default(now())
+}
+model Coursework {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  name String
+  description String @default("")
+  label String @default("")
+  enabled Boolean @default(true)
+  archived Boolean @default(false)
+  sortOrder Int @default(0)
+  eligibleUsers String[] @default([])
+  eligibleRoles String[] @default([])
+  startsAt DateTime?
+  endsAt DateTime?
+  tickets QueueTicket[]
+  @@index([guildId, sortOrder])
+}
+model TASession {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  taId String
+  taName String
+  voiceChannelId String
+  capacity Int
+  weight Int @default(1)
+  status SessionStatus @default(ACCEPTING)
+  present Boolean @default(true)
+  paused Boolean @default(false)
+  courseworkIds String[] @default([])
+  roleIds String[] @default([])
+  note String @default("")
+  activatedAt DateTime @default(now())
+  lastPresence DateTime @default(now())
+  completedAt DateTime?
+  tickets QueueTicket[]
+  reservations QueueReservation[]
+  @@index([guildId, status])
+}
+model QueueTicket {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  sequence Int
+  studentId String
+  student Student @relation(fields: [studentId], references: [id])
+  courseworkId String
+  coursework Coursework @relation(fields: [courseworkId], references: [id])
+  sessionId String?
+  session TASession? @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  originalSessionId String?
+  assisted Boolean @default(false)
+  status TicketStatus @default(QUEUED)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  reservation QueueReservation?
+  inspection Inspection?
+  transfers VoiceTransferOperation[]
+  completion InspectionCompletion?
+  @@unique([guildId, sequence])
+  @@index([guildId, status, sequence])
+  @@index([sessionId, status, sequence])
+}
+model QueueReservation {
+  id String @id @default(cuid())
+  ticketId String @unique
+  ticket QueueTicket @relation(fields: [ticketId], references: [id])
+  sessionId String?
+  session TASession? @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  @@index([sessionId])
+}
+model Inspection {
+  status String @default("IN_PROGRESS")
+  id String @id @default(cuid())
+  ticketId String @unique
+  ticket QueueTicket @relation(fields: [ticketId], references: [id])
+  taId String
+  startedAt DateTime @default(now())
+  completedAt DateTime?
+  note String @default("")
+  assisted Boolean @default(false)
+  voiceChannelId String?
+  completionReason String @default("MANUAL")
+  durationSeconds Int?
+  voided Boolean @default(false)
+}
+model VoiceTransferOperation {
+  id String @id @default(cuid())
+  ticketId String
+  ticket QueueTicket @relation(fields: [ticketId], references: [id])
+  targetChannelId String
+  state String @default("PENDING")
+  attempts Int @default(0)
+  leaseToken String?
+  leaseUntil DateTime?
+  nextAttemptAt DateTime @default(now())
+  lastError String?
+  verifiedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([state, nextAttemptAt])
+}
+model IdempotencyRecord {
+  key String @id
+  guildId String
+  actorId String
+  action String
+  result Json
+  createdAt DateTime @default(now())
+}
+model DraftSelection {
+  guildId String
+  discordId String
+  courseworkId String
+  expiresAt DateTime
+  @@id([guildId, discordId])
+}
+model MuteOwnership {
+  guildId String
+  discordId String
+  state String
+  createdAt DateTime @default(now())
+  @@id([guildId, discordId])
+}
+model ChannelBinding {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  feature String
+  channelIds String[]
+  @@unique([guildId, feature])
+}
+model EmbedTemplate {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  name String
+  feature String
+  version Int @default(1)
+  document Json
+  versions Json @default("[]")
+  updatedAt DateTime @updatedAt
+  panels PublishedPanel[]
+  roomPanels TARoomPanel[]
+}
+model PublishedPanel {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  channelId String
+  messageId String?
+  templateId String
+  template EmbedTemplate @relation(fields: [templateId], references: [id])
+  version Int @default(0)
+  mode String @default("EMBED")
+  fingerprint String?
+  generation Int @default(0)
+  publishedAt DateTime?
+  error String?
+  active Boolean @default(true)
+  checkedAt DateTime?
+  roomMapping TARoomPanel?
+  @@unique([guildId, channelId, templateId])
+}
+model SupportTicket {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  creatorId String
+  channelId String? @unique
+  category String
+  subject String
+  description String
+  additional String @default("")
+  status String @default("CREATING")
+  assignedId String?
+  createdAt DateTime @default(now())
+  closedAt DateTime?
+  closedBy String?
+  closureReason String @default("")
+  transcriptRequired Boolean @default(false)
+  channelDeletedAt DateTime?
+  cleanupError String?
+  cleanupAttempts Int @default(0)
+  cleanupNextAttemptAt DateTime?
+  cleanupLeaseToken String?
+  cleanupLeaseUntil DateTime?
+  events SupportTicketEvent[]
+  transcript Json?
+  @@index([guildId, status, cleanupNextAttemptAt], map: "SupportTicket_cleanup")
+  @@index([guildId, status])
+}
+model SupportTicketEvent {
+  id String @id @default(cuid())
+  ticketId String
+  ticket SupportTicket @relation(fields: [ticketId], references: [id])
+  actorId String
+  action String
+  note String @default("")
+  createdAt DateTime @default(now())
+}
+model SystemEvent {
+  id Int @id @default(autoincrement())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  actorId String
+  type String
+  severity String @default("info")
+  message String
+  data Json @default("{}")
+  correlationId String
+  dispatchedAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([guildId, createdAt])
+  deliveries NotificationDelivery[]
+  @@index([dispatchedAt])
+}
+model ServiceOperation {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  actorId String
+  action String
+  data Json @default("{}")
+  status String @default("PENDING")
+  error String?
+  leaseUntil DateTime?
+  attempts Int @default(0)
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  @@index([status, createdAt])
+}
+model ServiceHeartbeat {
+  service String @id
+  status String
+  detail String @default("")
+  updatedAt DateTime @updatedAt
+}
+model QueueIncident {
+  guildId String @id
+  startedAt DateTime
+  notifiedAt DateTime?
+  resolvedAt DateTime?
+  unresolvedCount Int
+}
+model NotificationDelivery {
+  id String @id
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  event SystemEvent @relation(fields: [eventId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  guildId String
+  channelId String
+  eventId Int
+  status String @default("PENDING")
+  error String?
+  createdAt DateTime @default(now())
+  sentAt DateTime?
+}
+
+model ManagedPermission {
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  channelId String
+  targetId String
+  targetType Int
+  original Json
+  applied Json
+  @@id([guildId, channelId, targetId])
+}
+
+model TAPresence {
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  taId String
+  taName String
+  voiceChannelId String
+  roleIds String[]
+  observedAt DateTime @default(now())
+  @@id([guildId, taId])
+  @@index([guildId, observedAt])
+}
+
+model TARoomPanel {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  voiceChannelId String
+  destinationChannelId String
+  mode String @default("VOICE")
+  visibility String @default("PUBLIC")
+  studentIdDisclosureAcknowledged Boolean @default(false)
+  templateId String
+  template EmbedTemplate @relation(fields: [templateId], references: [id])
+  enabled Boolean @default(true)
+  refreshSeconds Int @default(30)
+  publishedPanelId String? @unique
+  publishedPanel PublishedPanel? @relation(fields: [publishedPanelId], references: [id])
+  updatedAt DateTime @updatedAt
+  @@unique([guildId, voiceChannelId])
+  @@unique([guildId, destinationChannelId])
+}
+model MaintenancePlan {
+  id String @id @default(cuid())
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  adminId String
+  input Json
+  preview Json
+  fingerprint String
+  cutoff DateTime
+  expiresAt DateTime
+  status String @default("PREVIEW")
+  backupPath String?
+  backupVerifiedAt DateTime?
+  leaseUntil DateTime?
+  result Json?
+  error String?
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  @@index([guildId, createdAt])
+}
+
+model InspectionCompletion {
+  outcome String @default("COMPLETED")
+  studentDiscordId String?
+  notificationState String @default("NONE")
+  notificationChannelId String?
+  notificationMessageId String?
+  notificationSentAt DateTime?
+  notificationError String?
+  ticketId String @id
+  ticket QueueTicket @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  actorId String
+  voiceChannelId String
+  state String @default("PENDING")
+  attempts Int @default(0)
+  leaseToken String?
+  leaseUntil DateTime?
+  nextAttemptAt DateTime @default(now())
+  lastError String?
+  verifiedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([state, nextAttemptAt])
+}
+model WaitingPresence {
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  discordId String
+  voiceChannelId String
+  joinedAt DateTime @default(now())
+  observedAt DateTime @default(now())
+  @@id([guildId, discordId])
+}
+model WaitingRoomAlert {
+  guildId String
+  guild Guild @relation(fields: [guildId], references: [id])
+  scope String
+  startedAt DateTime @default(now())
+  resolvedAt DateTime?
+  notifiedAt DateTime?
+  lastNotifiedAt DateTime?
+  mentionAttempted Boolean @default(false)
+  channelId String?
+  messageId String?
+  generation Int @default(0)
+  fingerprint String?
+  leaseToken String?
+  leaseUntil DateTime?
+  lastError String?
+  @@id([guildId, scope])
+}

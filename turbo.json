@@ -1,0 +1,28 @@
+{
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "passThroughEnv": [
+        "DATABASE_URL",
+        "REDIS_URL",
+        "DISCORD_GUILD_ID",
+        "AUTH_SECRET"
+      ],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "@ta/bot#build": {
+      "outputs": []
+    },
+    "@ta/worker#build": {
+      "outputs": []
+    },
+    "@ta/ops-agent#build": {
+      "outputs": []
+    }
+  },
+  "globalDependencies": ["packages/**", "tsconfig.json"]
+}

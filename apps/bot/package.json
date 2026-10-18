@@ -1,0 +1,9 @@
+{
+  "name": "@ta/bot",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc --noEmit -p ../../tsconfig.json"
+  }
+}
