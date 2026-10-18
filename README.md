@@ -2,16 +2,6 @@
 
 เว็บแอดมิน บอต Discord, Queue Worker, PostgreSQL และ Redis ใช้ **root `.env` ไฟล์เดียว** เปิดด้วยคำสั่งเดียว ไม่ต้องลง Node.js หรือ pnpm บนเครื่องปลายทาง
 
-## คู่มือ Web Admin ภาษาไทย
-
-เริ่มที่ [Quick Start](docs/WEB_ADMIN_QUICK_START_TH.md) หรือ [คู่มือฉบับสมบูรณ์ 21 บท](docs/WEB_ADMIN_COMPLETE_GUIDE_TH.md) ซึ่งตรวจเทียบหน้าจอและซอร์สปัจจุบัน ครอบคลุมทั้ง 14 เมนู พร้อมข้อจำกัดที่พบ
-
-- [Configuration reference](docs/WEB_ADMIN_CONFIGURATION_REFERENCE_TH.md)
-- [Discord roles, channels และ TA room panels](docs/DISCORD_ROLES_AND_CHANNELS_GUIDE_TH.md)
-- [Embed Builder และ placeholders](docs/EMBED_BUILDER_REFERENCE_TH.md)
-- [Global FIFO และการปฏิบัติงาน TA](docs/QUEUE_AND_TA_OPERATIONS_TH.md)
-- [Troubleshooting และ FAQ 38 กรณี](docs/TROUBLESHOOTING_AND_FAQ_TH.md)
-
 ## ติดตั้งครั้งแรก
 
 ต้องมี Docker Engine/Desktop พร้อม Docker Compose v2 และ Buildx; บน Windows ใช้ Docker Desktop + WSL2 เครื่องควรมี RAM 4 GB และพื้นที่ว่างสำหรับ build อย่างน้อย 8 GB
