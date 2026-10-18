@@ -1,4 +1,4 @@
-# Profun Assistant — Docker deployment
+# Profund Assistant — Docker deployment
 
 เว็บแอดมิน บอต Discord, Queue Worker, PostgreSQL และ Redis ใช้ **root `.env` ไฟล์เดียว** เปิดด้วยคำสั่งเดียว ไม่ต้องลง Node.js หรือ pnpm บนเครื่องปลายทาง
 
