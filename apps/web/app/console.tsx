@@ -486,7 +486,9 @@ function Dashboard() {
   const ops = useQuery({
     queryKey: ["operations"],
     queryFn: () => api<ServiceOperation[]>("operations"),
-    enabled: !!me.data && ["operations", "roles", "support"].includes(active),
+    enabled:
+      !!me.data &&
+      ["operations", "roles", "support", "students"].includes(active),
     refetchInterval: 5000,
   });
   const accounts = useQuery({
@@ -1465,6 +1467,12 @@ function Dashboard() {
           action={
             canEdit ? (
               <div className="row-actions">
+                <button
+                  disabled={busy || !students.data?.length}
+                  onClick={() => void mutate("students/recover-mappings")}
+                >
+                  Recover Discord mappings
+                </button>
                 <a className="button" href="/api/students/template">
                   <Download size={15} /> CSV template
                 </a>
@@ -1488,6 +1496,27 @@ function Dashboard() {
             ) : null
           }
         >
+          <p className="panel-note">
+            Recovery runs after import. Only members with the configured Student
+            role and a matching student ID and name are linked. Ambiguous
+            matches and existing mappings stay unchanged.
+          </p>
+          {ops.data
+            ?.filter((op) => op.action === "recover_identities")
+            .slice(0, 1)
+            .map((op) => (
+              <p className="panel-note" role="status" key={op.id}>
+                Discord mapping recovery: {label(op.status)}
+                {op.error
+                  ? ` · ${op.error}`
+                  : op.status === "COMPLETED" &&
+                      op.data &&
+                      typeof op.data === "object" &&
+                      !Array.isArray(op.data)
+                    ? ` · ${String(op.data.recovered ?? 0)} recovered · ${String(op.data.skipped ?? 0)} unchanged`
+                    : ""}
+              </p>
+            ))}
           <div className="table-toolbar">
             <SearchBox value={search} onChange={setSearch} />
             <a className="button" href="/api/students/export">
@@ -4039,6 +4068,19 @@ function EmbedEditor({
                         (p.publishedAt
                           ? `Published ${relative(p.publishedAt)} · v${p.version}`
                           : "Waiting for bot synchronization")}
+                      {p.messageId && (
+                        <>
+                          {" "}
+                          ·{" "}
+                          <a
+                            href={`https://discord.com/channels/${p.guildId}/${p.channelId}/${p.messageId}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open Discord message
+                          </a>
+                        </>
+                      )}
                     </small>
                   </div>
                 ))}

@@ -97,6 +97,28 @@ async function body(req: NextRequest) {
     throw new DomainError("JSON", "Invalid JSON request.", 400);
   }
 }
+async function queueIdentityRecovery(
+  tx: Prisma.TransactionClient,
+  guildId: string,
+  actorId: string,
+) {
+  const pending = await tx.serviceOperation.findFirst({
+    where: { guildId, action: "recover_identities", status: "PENDING" },
+  });
+  if (pending) return pending;
+  const operation = await tx.serviceOperation.create({
+    data: { guildId, actorId, action: "recover_identities" },
+  });
+  await event(
+    tx,
+    guildId,
+    actorId,
+    "identity.recovery_requested",
+    "Recovery of previously verified Discord identities queued.",
+    { operationId: operation.id },
+  );
+  return operation;
+}
 const directoryRest = new REST({
   version: "10",
   timeout: 10000,
@@ -357,6 +379,12 @@ async function route(
     });
   }
   if (resource === "students") {
+    if (write && id === "recover-mappings")
+      return result(
+        await locked(guildId, (tx) =>
+          queueIdentityRecovery(tx, guildId, actor),
+        ),
+      );
     if (write && action === "approve")
       return result(
         await locked(guildId, async (tx) => {
@@ -488,6 +516,8 @@ async function route(
             where: { id: imp.id },
             data: { committedAt: new Date() },
           });
+          if (created || updated)
+            await queueIdentityRecovery(tx, guildId, actor);
           await event(
             tx,
             guildId,
@@ -581,6 +611,8 @@ async function route(
         const student = id
           ? await tx.student.update({ where: { id }, data: input })
           : await tx.student.create({ data: { guildId, ...input } });
+        if (!student.discordId && student.registration === "UNREGISTERED")
+          await queueIdentityRecovery(tx, guildId, actor);
         await event(
           tx,
           guildId,

@@ -17,6 +17,7 @@ import {
 } from "../packages/queue-engine/src/index";
 import {
   client,
+  rest,
   processTransfer,
   waitingMute,
   cleanupMute,
@@ -172,6 +173,7 @@ async function resetQueue() {
   });
 }
 beforeEach(async () => {
+  vi.spyOn(rest, "get").mockResolvedValue([]);
   guild.available = true;
   await resetQueue();
   channels.set("category", { id: "category", type: 4 });

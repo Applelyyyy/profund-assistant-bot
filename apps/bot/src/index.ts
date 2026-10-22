@@ -44,6 +44,7 @@ import {
   reconcilePresence,
   reconcileStudentVoice,
   syncIdentity,
+  recoverIdentities,
   createSupportChannel,
   supportAction,
   validateChannels,
@@ -82,10 +83,17 @@ async function runOperation(id: string) {
     },
   });
   if (!claimed.count) return;
+  let recoveryResult: { recovered: number; skipped: number } | undefined;
   try {
     const data = op.data as Record<string, string>;
     const ctx = await context(op.guildId);
-    if (["waiting_alert_check", "waiting_alert_test"].includes(op.action)) {
+    if (
+      [
+        "waiting_alert_check",
+        "waiting_alert_test",
+        "recover_identities",
+      ].includes(op.action)
+    ) {
       const admin = await db.adminUser.findUnique({
         where: { id: op.actorId },
       });
@@ -204,8 +212,9 @@ async function runOperation(id: string) {
         if (!member?.voice.channelId)
           await cancelTicket(op.guildId, "system", op.id, ticket.id, true);
       }
-    } else if (op.action === "sync_identity")
-      await syncIdentity(data.studentId);
+    } else if (op.action === "recover_identities")
+      recoveryResult = await recoverIdentities(op.guildId, op.actorId);
+    else if (op.action === "sync_identity") await syncIdentity(data.studentId);
     else if (op.action === "create_support")
       await createSupportChannel(data.ticketId);
     else if (op.action === "support_action") {
@@ -347,6 +356,7 @@ async function runOperation(id: string) {
         completedAt: new Date(),
         leaseUntil: null,
         error: null,
+        ...(recoveryResult ? { data: recoveryResult } : {}),
       },
     });
     await locked(op.guildId, (tx) =>

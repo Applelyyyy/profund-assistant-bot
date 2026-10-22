@@ -12,6 +12,7 @@ import {
   TextChannel,
   VoiceChannel,
   escapeMarkdown,
+  MessageFlags,
 } from "discord.js";
 import { db, Prisma } from "../../../packages/database/src/index";
 import { env, logger } from "../../../packages/config/src/index";
@@ -21,6 +22,7 @@ import {
   defaultAccess,
   settingsSchema,
   canHandle,
+  ACTIVE,
 } from "../../../packages/shared/src/index";
 import {
   event,
@@ -54,6 +56,7 @@ import {
   recordDuration,
 } from "../../../packages/config/src/performance";
 import { randomUUID, createHash } from "node:crypto";
+import { matchesPanel } from "./panel-recovery";
 import {
   queueTop,
   roomCurrent,
@@ -244,6 +247,179 @@ export async function syncIdentity(studentId: string) {
     });
     throw new DomainError("IDENTITY_SYNC", message);
   }
+}
+export async function recoverIdentities(guildId: string, actorId: string) {
+  const { guild, settings } = await context(guildId);
+  if (!settings.studentRole || settings.studentRole === guild.id)
+    throw new DomainError(
+      "STUDENT_ROLE",
+      "Configure the previously verified Student role before recovering mappings.",
+    );
+  // A complete fetch is required: partial member caches cannot detect duplicate nicknames.
+  const members = await guild.members.fetch();
+  const normalize = (value: string) =>
+    value.normalize("NFC").trim().replace(/\s+/g, " ");
+  const byNickname = new Map<string, string[]>();
+  for (const member of members.values()) {
+    if (
+      member.user.bot ||
+      !member.nickname ||
+      !member.roles.cache.has(settings.studentRole)
+    )
+      continue;
+    const key = normalize(member.nickname);
+    byNickname.set(key, [...(byNickname.get(key) || []), member.id]);
+  }
+  return locked(guildId, async (tx, currentSettings) => {
+    if (
+      currentSettings.studentRole !== settings.studentRole ||
+      currentSettings.nicknameTemplate !== settings.nicknameTemplate
+    )
+      throw new DomainError(
+        "CONFIGURATION_CHANGED",
+        "Student verification settings changed during recovery. Retry the scan.",
+      );
+    const students = await tx.student.findMany({ where: { guildId } });
+    const activeStudents = new Set(
+      (
+        await tx.queueTicket.findMany({
+          where: { guildId, status: { in: [...ACTIVE] } },
+          select: { studentId: true },
+          distinct: ["studentId"],
+        })
+      ).map((ticket) => ticket.studentId),
+    );
+    const linked = new Set(
+      students.flatMap((s) => (s.discordId ? [s.discordId] : [])),
+    );
+    const expected = new Map<string, string[]>();
+    for (const student of students) {
+      const names = [
+        `${student.studentId} ${student.name}`,
+        `${student.studentId} ${student.name} ${student.lastname}`,
+      ];
+      if (
+        settings.nicknameTemplate.includes("{id}") &&
+        settings.nicknameTemplate.includes("{name}")
+      )
+        names.push(
+          settings.nicknameTemplate
+            .replaceAll("{id}", student.studentId)
+            .replaceAll("{name}", student.name)
+            .replaceAll("{lastname}", student.lastname),
+        );
+      for (const name of new Set(
+        names.map((n) => normalize([...n].slice(0, 32).join(""))),
+      )) {
+        // Never restore a mapping from a truncated student ID or incomplete first name.
+        if (!name.includes(normalize(`${student.studentId} ${student.name}`)))
+          continue;
+        expected.set(name, [...(expected.get(name) || []), student.id]);
+      }
+    }
+    const proposals = new Map<string, Set<string>>();
+    const ambiguous = new Set<string>();
+    for (const [nickname, ids] of expected) {
+      const discordIds = byNickname.get(nickname);
+      if (ids.length > 1 || (discordIds?.length || 0) > 1)
+        ids.forEach((id) => ambiguous.add(id));
+      if (ids.length !== 1 || discordIds?.length !== 1) continue;
+      const choices = proposals.get(ids[0]) || new Set<string>();
+      choices.add(discordIds[0]);
+      proposals.set(ids[0], choices);
+    }
+    let recovered = 0;
+    for (const student of students) {
+      const choices = proposals.get(student.id);
+      if (
+        student.discordId ||
+        ambiguous.has(student.id) ||
+        student.registration !== "UNREGISTERED" ||
+        choices?.size !== 1
+      )
+        continue;
+      const discordId = [...choices][0];
+      if (linked.has(discordId) || activeStudents.has(student.id)) continue;
+      await tx.student.update({
+        where: { id: student.id },
+        data: { discordId, registration: "REGISTERED", syncError: null },
+      });
+      linked.add(discordId);
+      recovered++;
+      await event(
+        tx,
+        guildId,
+        actorId,
+        "identity.recovered",
+        "Existing verified Discord identity recovered from Student role and nickname.",
+        { studentId: student.id, discordId },
+      );
+    }
+    const result = { recovered, skipped: students.length - recovered };
+    await event(
+      tx,
+      guildId,
+      actorId,
+      "identity.recovery_completed",
+      "Discord identity recovery completed; unmatched and ambiguous students remain unchanged.",
+      result,
+    );
+    return result;
+  });
+}
+
+async function recoverPanelMessage(
+  guildId: string,
+  channelId: string,
+  feature: string,
+  document: unknown,
+  roomId?: string,
+) {
+  const botId = client.user?.id;
+  if (!botId)
+    throw new DomainError(
+      "BOT_NOT_READY",
+      "Wait for the bot to connect before recovering panels.",
+    );
+  const claimed = new Set(
+    (
+      await db.publishedPanel.findMany({
+        where: { guildId, messageId: { not: null } },
+        select: { messageId: true },
+      })
+    ).map((p) => p.messageId),
+  );
+  const match = (message: APIMessage) =>
+    !claimed.has(message.id) &&
+    matchesPanel(message, botId, feature, document, roomId);
+  // Pins allow a long-lived panel to be recovered even in a busy channel.
+  const pins = (await rest.get(Routes.channelMessagesPins(channelId))) as {
+    items?: { message: APIMessage }[];
+    has_more?: boolean;
+  };
+  const pinned = pins.items?.find((item) => match(item.message));
+  if (pinned) return pinned.message;
+  let before: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const query = new URLSearchParams({
+      limit: "100",
+      ...(before ? { before } : {}),
+    });
+    const messages = (await rest.get(Routes.channelMessages(channelId), {
+      query,
+    })) as APIMessage[];
+    const found = messages.find(match);
+    if (found) return found;
+    if (messages.length < 100) {
+      if (pins.has_more) break;
+      return null;
+    }
+    before = messages.at(-1)!.id;
+  }
+  throw new DomainError(
+    "PANEL_HISTORY_LIMIT",
+    "Panel history is too large to safely publish. Pin the original bot panel and retry.",
+  );
 }
 export async function register(
   guildId: string,
@@ -1020,9 +1196,40 @@ async function synchronizePanels(
                 throw e;
               })
           : null;
+      let recovered = false;
+      let existingMode = panel.mode;
       let existingId = verifyExisting ? existing?.id || null : panel.messageId;
+      if (!existingId) {
+        const adopted = await recoverPanelMessage(
+          guildId,
+          panel.channelId,
+          panel.template.feature,
+          document,
+          panel.roomMapping?.voiceChannelId,
+        );
+        if (adopted) {
+          existingId = adopted.id;
+          existingMode =
+            adopted.flags! & MessageFlags.IsComponentsV2 ? "V2" : "EMBED";
+          if (existingMode !== mode)
+            throw new DomainError(
+              "PANEL_MODE",
+              "An existing panel uses a different display mode. Select that mode to reuse its message.",
+            );
+          await db.publishedPanel.update({
+            where: { id: panel.id },
+            data: {
+              messageId: adopted.id,
+              mode: existingMode,
+              fingerprint: null,
+            },
+          });
+          recovered = true;
+        }
+      }
       if (
         existingId &&
+        !recovered &&
         panel.mode === mode &&
         panel.fingerprint === fingerprint
       ) {
@@ -1049,7 +1256,7 @@ async function synchronizePanels(
         existingId = null;
       }
       let message: APIMessage | undefined;
-      if (existingId && panel.mode === mode) {
+      if (existingId && existingMode === mode) {
         try {
           message = (await rest.patch(
             Routes.channelMessage(panel.channelId, existingId),
@@ -1087,6 +1294,21 @@ async function synchronizePanels(
           error: null,
         },
       });
+      if (recovered)
+        await locked(guildId, (tx) =>
+          event(
+            tx,
+            guildId,
+            "system",
+            "panel.recovered",
+            "Existing Discord panel adopted and updated.",
+            {
+              panelId: panel.id,
+              channelId: panel.channelId,
+              messageId: message.id,
+            },
+          ),
+        );
     } catch (error) {
       const message =
         error instanceof DomainError
